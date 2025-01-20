@@ -15,6 +15,12 @@ const childProcess = require("child_process");
 // also a consistent root path so that it is easy to change later when the script should be moved
 const cwd = path.resolve(__dirname, '..');
 
+// support custom heading ids
+// see https://www.markdownguide.org/extended-syntax/#heading-ids
+// Example:
+// # Some Header {#custom-id}
+const CustomIdRegex = /{#([a-zA-Z0-9_-]+)}(?: *)$/;
+
 const isMain = require.main === module;
 
 let jobs = [];
@@ -29,28 +35,39 @@ try {
 
 require('acquit-ignore')();
 
-const { marked: markdown } = require('marked');
+const markdown = require('marked');
 const highlight = require('highlight.js');
-const { promisify } = require("util");
+const { promisify } = require('util');
+
 markdown.use({
-  heading: function(text, level, raw, slugger) {
-    const slug = slugger.slug(raw);
-    return `<h${level} id="${slug}">
-      <a href="#${slug}">
-        ${text}
-      </a>
-    </h${level}>\n`;
-  }
-});
-markdown.setOptions({
-  highlight: function(code, language) {
-    if (!language) {
-      language = 'javascript';
+  renderer: {
+    heading: function({ tokens, depth }) {
+      let raw = this.parser.parseInline(tokens);
+      let slug;
+      const idMatch = CustomIdRegex.exec(raw);
+
+      // use custom header id if available, otherwise fallback to default slugger
+      if (idMatch) {
+        slug = idMatch[1];
+        raw = raw.replace(CustomIdRegex, '');
+      } else {
+        slug = createSlug(raw.trim());
+      }
+      return `<h${depth} id="${slug}">
+        <a href="#${slug}">
+          ${raw}
+        </a>
+      </h${depth}>\n`;
+    },
+    code: function({ text, lang }) {
+      if (!lang || lang === 'acquit') {
+        lang = 'javascript';
+      }
+      if (lang === 'no-highlight') {
+        return text;
+      }
+      return `<pre><code lang="${lang}">${highlight.highlight(text, { language: lang }).value}</code></pre>`;
     }
-    if (language === 'no-highlight') {
-      return code;
-    }
-    return highlight.highlight(code, { language }).value;
   }
 });
 
@@ -147,11 +164,11 @@ function moveDocsToTemp() {
   }
 }
 
-/** 
+/**
  * Array of array of semver numbers, sorted with highest number first
  * @example
  * [[1,2,3], [0,1,2]]
- * @type {number[][]} 
+ * @type {number[][]}
  */
 let filteredTags = [];
 
@@ -221,16 +238,16 @@ function getVersions() {
  * Stringify a semver number array
  * @param {number[]} arr The array to stringify
  * @param {boolean} dotX If "true", return "5.X" instead of "5.5.5"
- * @returns 
+ * @returns
  */
 function stringifySemverNumber(arr, dotX) {
   if (dotX) {
-    return `${arr[0]}.x`;  
+    return `${arr[0]}.x`;
   }
   return `${arr[0]}.${arr[1]}.${arr[2]}`;
 }
 
-/** 
+/**
  * Get the latest version available
  * @returns {Version}
  */
@@ -294,8 +311,7 @@ const versionObj = (() => {
     latestVersion: getLatestVersion(),
     pastVersions: [
       getLatestVersionOf(7),
-      getLatestVersionOf(6),
-      getLatestVersionOf(5),
+      getLatestVersionOf(6)
     ]
   };
   const versionedDeploy = !!process.env.DOCS_DEPLOY ? !(base.currentVersion.listed === base.latestVersion.listed) : false;
@@ -406,7 +422,7 @@ function mapURLs(block, currentUrl) {
  * @param {String} filename The documentation file path to render
  * @param {import("../docs/source/index").DocsOptions} options The options to use to render the file (api may be overwritten at reload)
  * @param {Boolean} isReload Indicate this is a reload of the file
- * @returns 
+ * @returns
  */
 async function pugify(filename, options, isReload = false) {
   /** Path for the output file */
@@ -486,7 +502,7 @@ async function pugify(filename, options, isReload = false) {
   }
 
   str = mapURLs(str, '/' + path.relative(cwd, docsPath))
-  
+
   await fs.promises.writeFile(newfile, str).catch((err) => {
     console.error('could not write', err.stack);
   }).then(() => {
@@ -590,6 +606,7 @@ if (isMain) {
   (async function main() {
     console.log(`Processing ~${files.length} files`);
 
+    require('./generateSearch');
     await deleteAllHtmlFiles();
     await pugifyAllFiles();
     await copyAllRequiredFiles();
@@ -599,4 +616,13 @@ if (isMain) {
 
     console.log('Done Processing');
   })();
+}
+
+// Modified from github-slugger
+function createSlug(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  value = value.toLowerCase();
+  return value.replace(/<\/?code>/g, '').replace(/[^a-z0-9-_\s]/g, '').replace(/ /g, '-');
 }

@@ -26,6 +26,9 @@ describe('schema select option', function() {
   afterEach(() => require('./util').stopRemainingOps(db));
 
   it('excluding paths through schematype', async function() {
+    // data clearing is required for this test, because in deno some other test leaks a "_id: immutable" index
+    await db.dropDatabase();
+
     const schema = new Schema({
       thin: Boolean,
       name: { type: String, select: false },
@@ -341,6 +344,19 @@ describe('schema select option', function() {
       assert.equal(doc.docs[0].bool, undefined);
       assert.equal(doc.docs[0].name, undefined);
       assert.equal(d.id, doc.id);
+    });
+
+    it('works if only one plus path and only one deselected field', async function() {
+      const MySchema = Schema({
+        name: String,
+        email: String,
+        password: { type: String, select: false }
+      });
+      const Test = db.model('Test', MySchema);
+      const { _id } = await Test.create({ name: 'test', password: 'secret' });
+
+      const doc = await Test.findById(_id).select('+password');
+      assert.strictEqual(doc.password, 'secret');
     });
 
     it('works with query.slice (gh-1370)', async function() {

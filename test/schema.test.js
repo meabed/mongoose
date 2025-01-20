@@ -19,6 +19,7 @@ const DocumentObjectId = mongoose.Types.ObjectId;
 const vm = require('vm');
 const idGetter = require('../lib/helpers/schema/idGetter');
 const applyPlugins = require('../lib/helpers/schema/applyPlugins');
+const utils = require('../lib/utils');
 
 /**
  * Test Document constructor.
@@ -72,6 +73,7 @@ describe('schema', function() {
         },
         b: { $type: String }
       }, { typeKey: '$type' });
+      db.deleteModel(/Test/);
       NestedModel = db.model('Test', NestedSchema);
     });
 
@@ -3172,6 +3174,13 @@ describe('schema', function() {
     const res = await Test.findOne({ _id: { $eq: doc._id, $type: 'objectId' } });
     assert.equal(res.name, 'Test Testerson');
   });
+  it('deduplicates idGetter (gh-14457)', function() {
+    const schema = new Schema({ name: String });
+    schema._preCompile();
+    assert.equal(schema.virtual('id').getters.length, 1);
+    schema._preCompile();
+    assert.equal(schema.virtual('id').getters.length, 1);
+  });
 
   it('handles recursive definitions in discriminators (gh-13978)', function() {
     const base = new Schema({
@@ -3201,5 +3210,114 @@ describe('schema', function() {
     const baseModel = db.model('gh14055', base);
     const doc = new baseModel({ type: 1, self: [{ type: 1 }] });
     assert.equal(doc.self[0].type, 1);
+  });
+  it('should have the correct schema definition with array schemas (gh-14416)', function() {
+    const schema = new Schema({
+      nums: [{ type: Array, of: Number }],
+      tags: [{ type: 'Array', of: String }],
+      subdocs: [{ type: Array, of: Schema({ name: String }) }]
+    });
+    assert.equal(schema.path('nums.$').caster.instance, 'Number'); // actually Mixed
+    assert.equal(schema.path('tags.$').caster.instance, 'String'); // actually Mixed
+    assert.equal(schema.path('subdocs.$').casterConstructor.schema.path('name').instance, 'String'); // actually Mixed
+  });
+  it('handles discriminator options with Schema.prototype.discriminator (gh-14448)', async function() {
+    const eventSchema = new mongoose.Schema({
+      name: String
+    }, { discriminatorKey: 'kind' });
+    const clickedEventSchema = new mongoose.Schema({ element: String });
+    eventSchema.discriminator(
+      'Test2',
+      clickedEventSchema,
+      { value: 'click' }
+    );
+    const Event = db.model('Test', eventSchema);
+    const ClickedModel = db.model('Test2');
+
+    const doc = await Event.create({ kind: 'click', element: '#hero' });
+    assert.equal(doc.element, '#hero');
+    assert.ok(doc instanceof ClickedModel);
+  });
+
+  it('supports schema-level readConcern (gh-14511)', async function() {
+    const eventSchema = new mongoose.Schema({
+      name: String
+    }, { readConcern: { level: 'available' } });
+    const Event = db.model('Test', eventSchema);
+
+    let q = Event.find();
+    let options = q._optionsForExec();
+    assert.deepStrictEqual(options.readConcern, { level: 'available' });
+
+    q = Event.find().setOptions({ readConcern: { level: 'local' } });
+    options = q._optionsForExec();
+    assert.deepStrictEqual(options.readConcern, { level: 'local' });
+
+    q = Event.find().setOptions({ readConcern: null });
+    options = q._optionsForExec();
+    assert.deepStrictEqual(options.readConcern, null);
+
+    await q;
+  });
+
+  it('supports casting object to subdocument (gh-14748) (gh-9076)', function() {
+    const nestedSchema = new Schema({ name: String });
+    nestedSchema.methods.getAnswer = () => 42;
+
+    const schema = new Schema({
+      arr: [nestedSchema],
+      singleNested: nestedSchema
+    });
+
+    // Cast to doc array
+    let subdoc = schema.path('arr').cast([{ name: 'foo' }])[0];
+    assert.ok(subdoc instanceof mongoose.Document);
+    assert.equal(subdoc.getAnswer(), 42);
+
+    // Cast to single nested subdoc
+    subdoc = schema.path('singleNested').cast({ name: 'bar' });
+    assert.ok(subdoc instanceof mongoose.Document);
+    assert.equal(subdoc.getAnswer(), 42);
+  });
+  it('throws "already has an index" error if duplicate index definition (gh-15056)', function() {
+    sinon.stub(utils, 'warn').callsFake(() => {});
+    try {
+      const ObjectKeySchema = new mongoose.Schema({
+        key: {
+          type: String,
+          required: true,
+          unique: true
+        },
+        type: {
+          type: String,
+          required: false
+        }
+      });
+
+      ObjectKeySchema.index({ key: 1 });
+      assert.equal(utils.warn.getCalls().length, 1);
+      let [message] = utils.warn.getCalls()[0].args;
+      assert.equal(
+        message,
+        'Duplicate schema index on {"key":1} found. This is often due to declaring an index using both "index: true" and "schema.index()". Please remove the duplicate index definition.'
+      );
+
+      ObjectKeySchema.index({ key: 1, type: 1 });
+      assert.equal(utils.warn.getCalls().length, 1);
+      ObjectKeySchema.index({ key: 1, type: 1 });
+      assert.equal(utils.warn.getCalls().length, 2);
+      [message] = utils.warn.getCalls()[1].args;
+      assert.equal(
+        message,
+        'Duplicate schema index on {"key":1,"type":1} found. This is often due to declaring an index using both "index: true" and "schema.index()". Please remove the duplicate index definition.'
+      );
+
+      ObjectKeySchema.index({ type: 1, key: 1 });
+      ObjectKeySchema.index({ key: 1, type: -1 });
+      ObjectKeySchema.index({ key: 1, type: 1 }, { unique: true, name: 'special index' });
+      assert.equal(utils.warn.getCalls().length, 2);
+    } finally {
+      sinon.restore();
+    }
   });
 });
