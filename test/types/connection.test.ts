@@ -20,6 +20,10 @@ conn.readyState === 99;
 
 expectError(conn.readyState = 0);
 
+expectType<Promise<Record<string, Error | mongodb.Collection<any>>>>(
+  conn.createCollections()
+);
+
 expectType<Connection>(new Connection());
 expectType<Promise<Connection>>(new Connection().asPromise());
 
@@ -36,19 +40,24 @@ expectType<Array<string>>(conn.modelNames());
 expectType<Promise<void>>(createConnection('mongodb://127.0.0.1:27017/test').close());
 expectType<Promise<void>>(createConnection('mongodb://127.0.0.1:27017/test').close(true));
 
-expectType<mongodb.Db>(conn.db);
+expectType<mongodb.Db | undefined>(conn.db);
 
 expectType<mongodb.MongoClient>(conn.getClient());
 expectType<Connection>(conn.setClient(new mongodb.MongoClient('mongodb://127.0.0.1:27017/test')));
 
-expectType<Promise<void>>(conn.transaction(async(res) => {
+expectType<Promise<string>>(conn.transaction(async(res) => {
   expectType<mongodb.ClientSession>(res);
   return 'a';
 }));
-expectType<Promise<void>>(conn.transaction(async(res) => {
+expectType<Promise<string>>(conn.transaction(async(res) => {
   expectType<mongodb.ClientSession>(res);
   return 'a';
 }, { readConcern: 'majority' }));
+
+expectType<Promise<string>>(conn.withSession(async(res) => {
+  expectType<mongodb.ClientSession>(res);
+  return 'a';
+}));
 
 expectError(conn.user = 'invalid');
 expectError(conn.pass = 'invalid');
@@ -56,7 +65,7 @@ expectError(conn.host = 'invalid');
 expectError(conn.port = 'invalid');
 
 expectType<Collection>(conn.collection('test'));
-expectType<mongodb.Collection>(conn.db.collection('test'));
+expectType<mongodb.Collection | undefined>(conn.db?.collection('test'));
 
 expectType<Promise<mongodb.ClientSession>>(conn.startSession());
 expectType<Promise<mongodb.ClientSession>>(conn.startSession({ causalConsistency: true }));
@@ -69,6 +78,14 @@ expectType<Connection>(conn.useDb('test'));
 expectType<Connection>(conn.useDb('test', {}));
 expectType<Connection>(conn.useDb('test', { noListener: true }));
 expectType<Connection>(conn.useDb('test', { useCache: true }));
+
+expectType<Promise<string[]>>(
+  conn.listCollections().then(collections => collections.map(coll => coll.name))
+);
+
+expectType<Promise<string[]>>(
+  conn.listDatabases().then(dbs => dbs.databases.map(db => db.name))
+);
 
 export function autoTypedModelConnection() {
   const AutoTypedSchema = autoTypedSchema();

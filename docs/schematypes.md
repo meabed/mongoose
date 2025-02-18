@@ -18,7 +18,7 @@ and other general characteristics for Mongoose document properties.
 * [The `schema.path()` Function](#path)
 * [Further Reading](#further-reading)
 
-<h2 id="what-is-a-schematype"><a href="#what-is-a-schematype">What is a SchemaType?</a></h2>
+## What is a SchemaType? {#what-is-a-schematype}
 
 You can think of a Mongoose schema as the configuration object for a
 Mongoose model. A SchemaType is then a configuration object for an individual
@@ -55,8 +55,10 @@ Check out [Mongoose's plugins search](http://plugins.mongoosejs.io) to find plug
 * [Schema](#schemas)
 * [UUID](#uuid)
 * [BigInt](#bigint)
+* [Double](#double)
+* [Int32](#int32)
 
-<h3>Example</h3>
+### Example
 
 ```javascript
 const schema = new Schema({
@@ -68,6 +70,8 @@ const schema = new Schema({
   mixed: Schema.Types.Mixed,
   _someId: Schema.Types.ObjectId,
   decimal: Schema.Types.Decimal128,
+  double: Schema.Types.Double,
+  int32bit: Schema.Types.Int32,
   array: [],
   ofString: [String],
   ofNumber: [Number],
@@ -112,7 +116,7 @@ m.map = new Map([['key', 'value']]);
 m.save(callback);
 ```
 
-<h2 id="type-key"><a href="#type-key">The <code>type</code> Key</a></h2>
+## The `type` Key {#type-key}
 
 `type` is a special property in Mongoose schemas. When Mongoose finds
 a nested property named `type` in your schema, Mongoose assumes that
@@ -163,7 +167,7 @@ const holdingSchema = new Schema({
 });
 ```
 
-<h2 id="schematype-options"><a href="#schematype-options">SchemaType Options</a></h2>
+## SchemaType Options {#schematype-options}
 
 You can declare a schema type using the type directly, or an object with
 a `type` property.
@@ -201,7 +205,7 @@ The `lowercase` option only works for strings. There are certain options
 which apply for all schema types, and some that apply for specific schema
 types.
 
-<h3>All Schema Types</h3>
+### All Schema Types
 
 * `required`: boolean or function, if true adds a [required validator](validation.html#built-in-validators) for this property
 * `default`: Any or function, sets a default value for the path. If the value is a function, the return value of the function is used as the default.
@@ -234,7 +238,7 @@ doc.integerOnly; // 3
 doc.i; // 3
 ```
 
-<h3>Indexes</h3>
+### Indexes
 
 You can also define [MongoDB indexes](https://www.mongodb.com/docs/manual/indexes/)
 using schema type options.
@@ -254,7 +258,7 @@ const schema2 = new Schema({
 });
 ```
 
-<h3 id="string-validators">String</h3>
+### String {#string-validators}
 
 * `lowercase`: boolean, whether to always call `.toLowerCase()` on the value
 * `uppercase`: boolean, whether to always call `.toUpperCase()` on the value
@@ -265,26 +269,26 @@ const schema2 = new Schema({
 * `maxLength`: Number, creates a [validator](validation.html) that checks if the value length is not greater than the given number
 * `populate`: Object, sets default [populate options](populate.html#query-conditions)
 
-<h3 id="number-validators">Number</h3>
+### Number {#number-validators}
 
 * `min`: Number, creates a [validator](validation.html) that checks if the value is greater than or equal to the given minimum.
 * `max`: Number, creates a [validator](validation.html) that checks if the value is less than or equal to the given maximum.
 * `enum`: Array, creates a [validator](validation.html) that checks if the value is strictly equal to one of the values in the given array.
 * `populate`: Object, sets default [populate options](populate.html#query-conditions)
 
-<h3>Date</h3>
+### Date
 
 * `min`: Date, creates a [validator](validation.html) that checks if the value is greater than or equal to the given minimum.
 * `max`: Date, creates a [validator](validation.html) that checks if the value is less than or equal to the given maximum.
 * `expires`: Number or String, creates a TTL index with the value expressed in seconds.
 
-<h3>ObjectId</h3>
+### ObjectId
 
 * `populate`: Object, sets default [populate options](populate.html#query-conditions)
 
-<h2 id="usage-notes"><a href="#usage-notes">Usage Notes</a></h2>
+## Usage Notes {#usage-notes}
 
-<h3 id="strings">String</h3>
+### String {#strings}
 
 To declare a path as a string, you may use either the `String` global
 constructor or the string `'String'`.
@@ -308,7 +312,7 @@ new Person({ name: { toString: () => 42 } }).name; // "42" as a string
 new Person({ name: { foo: 42 } }).name;
 ```
 
-<h3 id="numbers">Number</h3>
+### Number {#numbers}
 
 To declare a path as a number, you may use either the `Number` global
 constructor or the string `'Number'`.
@@ -337,7 +341,7 @@ The values `null` and `undefined` are not cast.
 NaN, strings that cast to NaN, arrays, and objects that don't have a `valueOf()` function
 will all result in a [CastError](validation.html#cast-errors) once validated, meaning that it will not throw on initialization, only when validated.
 
-<h3 id="dates">Dates</h3>
+### Dates {#dates}
 
 [Built-in `Date` methods](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date) are [**not** hooked into](https://github.com/Automattic/mongoose/issues/1598) the mongoose change tracking logic which in English means that if you use a `Date` in your document and modify it with a method like `setMonth()`, mongoose will be unaware of this change and `doc.save()` will not persist this modification. If you must modify `Date` types using built-in methods, tell mongoose about the change with `doc.markModified('pathToYourDate')` before saving.
 
@@ -351,7 +355,7 @@ doc.markModified('dueDate');
 await doc.save(); // works
 ```
 
-<h3 id="buffers">Buffer</h3>
+### Buffer {#buffers}
 
 To declare a path as a Buffer, you may use either the `Buffer` global
 constructor or the string `'Buffer'`.
@@ -371,7 +375,7 @@ const file2 = new Data({ binData: 72987 }); // {"type":"Buffer","data":[27]}
 const file4 = new Data({ binData: { type: 'Buffer', data: [1, 2, 3]}}); // {"type":"Buffer","data":[1,2,3]}
 ```
 
-<h3 id="mixed">Mixed</h3>
+### Mixed {#mixed}
 
 An "anything goes" SchemaType. Mongoose will not do any casting on mixed paths.
 You can define a mixed path using `Schema.Types.Mixed` or by passing an empty
@@ -398,7 +402,7 @@ person.markModified('anything');
 person.save(); // Mongoose will save changes to `anything`.
 ```
 
-<h3 id="objectids">ObjectIds</h3>
+### ObjectIds {#objectids}
 
 An [ObjectId](https://www.mongodb.com/docs/manual/reference/method/ObjectId/)
 is a special type typically used for unique identifiers. Here's how
@@ -425,7 +429,7 @@ car.driver instanceof mongoose.Types.ObjectId; // true
 car.driver.toString(); // Something like "5e1a0651741b255ddda996c4"
 ```
 
-<h3 id="booleans">Boolean</h3>
+### Boolean {#booleans}
 
 Booleans in Mongoose are [plain JavaScript booleans](https://www.w3schools.com/js/js_booleans.asp).
 By default, Mongoose casts the below values to `true`:
@@ -459,7 +463,7 @@ mongoose.Schema.Types.Boolean.convertToFalse.add('nay');
 console.log(new M({ b: 'nay' }).b); // false
 ```
 
-<h3 id="arrays">Arrays</h3>
+### Arrays {#arrays}
 
 Mongoose supports arrays of [SchemaTypes](api/schema.html#schema_Schema-Types)
 and arrays of [subdocuments](subdocs.html). Arrays of SchemaTypes are
@@ -505,7 +509,7 @@ const Empty3 = new Schema({ any: [Schema.Types.Mixed] });
 const Empty4 = new Schema({ any: [{}] });
 ```
 
-<h3 id="maps">Maps</h3>
+### Maps {#maps}
 
 A `MongooseMap` is a subclass of [JavaScript's `Map` class](http://thecodebarbarian.com/the-80-20-guide-to-maps-in-javascript.html).
 In these docs, we'll use the terms 'map' and `MongooseMap` interchangeably.
@@ -591,7 +595,7 @@ on `socialMediaHandles.$*.oauth`:
 const user = await User.findOne().populate('socialMediaHandles.$*.oauth');
 ```
 
-<h3 id="uuid">UUID</h3>
+### UUID {#uuid}
 
 Mongoose also supports a UUID type that stores UUID instances as [Node.js buffers](https://thecodebarbarian.com/an-overview-of-buffers-in-node-js.html).
 We recommend using [ObjectIds](#objectids) rather than UUIDs for unique document ids in Mongoose, but you may use UUIDs if you need to.
@@ -632,7 +636,7 @@ const schema = new mongoose.Schema({
 });
 ```
 
-<h3 id="bigint">BigInt</h3>
+### BigInt {#bigint}
 
 Mongoose supports [JavaScript BigInts](https://thecodebarbarian.com/an-overview-of-bigint-in-node-js.html) as a SchemaType.
 BigInts are stored as [64-bit integers in MongoDB (BSON type "long")](https://www.mongodb.com/docs/manual/reference/bson-types/).
@@ -647,7 +651,76 @@ const question = new Question({ answer: 42n });
 typeof question.answer; // 'bigint'
 ```
 
-<h2 id="getters"><a href="#getters">Getters</a></h2>
+### Double {#double}
+
+Mongoose supports [64-bit IEEE 754-2008 floating point numbers](https://en.wikipedia.org/wiki/IEEE_754-2008_revision) as a SchemaType.
+Int32s are stored as [BSON type "double" in MongoDB](https://www.mongodb.com/docs/manual/reference/bson-types/).
+
+```javascript
+const studentsSchema = new Schema({
+  id: Int32
+});
+const Student = mongoose.model('Student', schema);
+
+const student = new Temperature({ celsius: 1339 });
+typeof student.id; // 'number'
+```
+
+There are several types of values that will be successfully cast to a Double.
+
+```javascript
+new Temperature({ celsius: '1.2e12' }).celsius; // 15 as a Double
+new Temperature({ celsius: true }).celsius; // 1 as a Double
+new Temperature({ celsius: false }).celsius; // 0 as a Double
+new Temperature({ celsius: { valueOf: () => 83.0033 } }).celsius; // 83 as a Double
+new Temperature({ celsius: '' }).celsius; // null as a Double
+```
+
+The following inputs will result will all result in a [CastError](validation.html#cast-errors) once validated, meaning that it will not throw on initialization, only when validated:
+
+* strings that do not represent a numeric string, a NaN or a null-ish value
+* objects that don't have a `valueOf()` function
+* an input that represents a value outside the bounds of a IEEE 754-2008 floating point
+
+### Int32 {#int32}
+
+Mongoose supports 32-bit integers as a SchemaType.
+Int32s are stored as [32-bit integers in MongoDB (BSON type "int")](https://www.mongodb.com/docs/manual/reference/bson-types/).
+
+```javascript
+const studentsSchema = new Schema({
+  id: Int32
+});
+const Student = mongoose.model('Student', schema);
+
+const student = new Temperature({ celsius: 1339 });
+typeof student.id; // 'number'
+```
+
+There are several types of values that will be successfully cast to a Number.
+
+```javascript
+new Student({ id: '15' }).id; // 15 as a Int32
+new Student({ id: true }).id; // 1 as a Int32
+new Student({ id: false }).id; // 0 as a Int32
+new Student({ id: { valueOf: () => 83 } }).id; // 83 as a Int32
+new Student({ id: '' }).id; // null as a Int32
+```
+
+If you pass an object with a `valueOf()` function that returns a Number, Mongoose will
+call it and assign the returned value to the path.
+
+The values `null` and `undefined` are not cast.
+
+The following inputs will result will all result in a [CastError](validation.html#cast-errors) once validated, meaning that it will not throw on initialization, only when validated:
+
+* NaN
+* strings that cast to NaN
+* objects that don't have a `valueOf()` function
+* a decimal that must be rounded to be an integer
+* an input that represents a value outside the bounds of an 32-bit integer
+
+## Getters {#getters}
 
 Getters are like virtuals for paths defined in your schema. For example,
 let's say you wanted to store user profile pictures as relative paths and
@@ -709,7 +782,7 @@ const root = 'https://s3.amazonaws.com/mybucket';
 schema.path('arr.0.url').get(v => `${root}${v}`);
 ```
 
-<h2 id="schemas"><a href="#schemas">Schemas</a></h2>
+## Schemas {#schemas}
 
 To declare a path as another [schema](guide.html#definition),
 set `type` to the sub-schema's instance.
@@ -731,7 +804,7 @@ const schema = new mongoose.Schema({
 });
 ```
 
-<h2 id="customtypes"><a href="#customtypes">Creating Custom Types</a></h2>
+## Creating Custom Types {#customtypes}
 
 Mongoose can also be extended with [custom SchemaTypes](customschematypes.html). Search the
 [plugins](http://plugins.mongoosejs.io)
@@ -743,7 +816,7 @@ and
 
 Read more about creating custom SchemaTypes [here](customschematypes.html).
 
-<h2 id="path"><a href="#path">The `schema.path()` Function</a></h2>
+## The `schema.path()` Function {#path}
 
 The `schema.path()` function returns the instantiated schema type for a
 given path.
@@ -765,7 +838,7 @@ console.log(sampleSchema.path('name'));
 You can use this function to inspect the schema type for a given path,
 including what validators it has and what the type is.
 
-<h2 id="further-reading"><a href="#further-reading">Further Reading</a></h2>
+## Further Reading {#further-reading}
 
 <ul>
   <li><a href="https://masteringjs.io/tutorials/mongoose/schematype">An Introduction to Mongoose SchemaTypes</a></li>

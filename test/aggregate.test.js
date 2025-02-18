@@ -7,6 +7,7 @@
 const start = require('./common');
 
 const assert = require('assert');
+const stream = require('stream');
 
 const Aggregate = require('../lib/aggregate');
 
@@ -286,11 +287,14 @@ describe('aggregate: ', function() {
     it('works', function() {
       const aggregate = new Aggregate();
 
-      assert.equal(aggregate.near({ a: 1 }), aggregate);
-      assert.deepEqual(aggregate._pipeline, [{ $geoNear: { a: 1 } }]);
+      assert.equal(aggregate.near({ near: { type: 'Point', coordinates: [1, 2] } }), aggregate);
+      assert.deepEqual(aggregate._pipeline, [{ $geoNear: { near: { type: 'Point', coordinates: [1, 2] } } }]);
 
-      aggregate.near({ b: 2 });
-      assert.deepEqual(aggregate._pipeline, [{ $geoNear: { a: 1 } }, { $geoNear: { b: 2 } }]);
+      aggregate.near({ near: { type: 'Point', coordinates: [3, 4] } });
+      assert.deepEqual(aggregate._pipeline, [
+        { $geoNear: { near: { type: 'Point', coordinates: [1, 2] } } },
+        { $geoNear: { near: { type: 'Point', coordinates: [3, 4] } } }
+      ]);
     });
 
     it('works with discriminators (gh-3304)', function() {
@@ -307,19 +311,19 @@ describe('aggregate: ', function() {
 
       aggregate._model = stub;
 
-      assert.equal(aggregate.near({ a: 1 }), aggregate);
+      assert.equal(aggregate.near({ near: { type: 'Point', coordinates: [1, 2] } }), aggregate);
       // Run exec so we apply discriminator pipeline
       Aggregate._prepareDiscriminatorPipeline(aggregate._pipeline, stub.schema);
       assert.deepEqual(aggregate._pipeline,
-        [{ $geoNear: { a: 1, query: { __t: 'subschema' } } }]);
+        [{ $geoNear: { near: { type: 'Point', coordinates: [1, 2] }, query: { __t: 'subschema' } } }]);
 
       aggregate = new Aggregate();
       aggregate._model = stub;
 
-      aggregate.near({ b: 2, query: { x: 1 } });
+      aggregate.near({ near: { type: 'Point', coordinates: [3, 4] }, query: { x: 1 } });
       Aggregate._prepareDiscriminatorPipeline(aggregate._pipeline, stub.schema);
       assert.deepEqual(aggregate._pipeline,
-        [{ $geoNear: { b: 2, query: { x: 1, __t: 'subschema' } } }]);
+        [{ $geoNear: { near: { type: 'Point', coordinates: [3, 4] }, query: { x: 1, __t: 'subschema' } } }]);
     });
   });
 
@@ -1215,6 +1219,32 @@ describe('aggregate: ', function() {
     assert.equal(res[1].test, 'a test');
   });
 
+  it('cursor supports transform option (gh-14331)', async function() {
+    const mySchema = new Schema({ name: String });
+    const Test = db.model('Test', mySchema);
+
+    await Test.deleteMany({});
+    await Test.create([{ name: 'Apple' }, { name: 'Apple' }]);
+
+    let resolve;
+    const waitForStream = new Promise(innerResolve => {
+      resolve = innerResolve;
+    });
+    const otherStream = new stream.Writable({
+      write(chunk, encoding, callback) {
+        resolve(chunk.toString());
+        callback();
+      }
+    });
+
+    await Test.
+      aggregate([{ $match: { name: 'Apple' } }]).
+      cursor({ transform: JSON.stringify }).
+      pipe(otherStream);
+    const streamValue = await waitForStream;
+    assert.ok(streamValue.includes('"name":"Apple"'), streamValue);
+  });
+
   describe('Mongo 3.6 options', function() {
     before(async function() {
       await onlyTestAtOrAbove('3.6', this);
@@ -1256,5 +1286,18 @@ describe('aggregate: ', function() {
 
     await p;
     await m.disconnect();
+  });
+
+  it('throws error if calling near() with empty coordinates (gh-15188)', async function() {
+    const M = db.model('Test', new Schema({ loc: { type: [Number], index: '2d' } }));
+    assert.throws(() => {
+      const aggregate = new Aggregate([], M);
+      aggregate.near({
+        near: {
+          type: 'Point',
+          coordinates: []
+        }
+      });
+    }, /Aggregate `near\(\)` argument has invalid coordinates, got ""/);
   });
 });

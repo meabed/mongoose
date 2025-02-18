@@ -795,7 +795,7 @@ describe('Query', function() {
         e = err;
       }
       assert.ok(e, 'uh oh. no error was thrown');
-      assert.equal(e.message, 'sort() only takes 1 Argument');
+      assert.equal(e.message, 'sort() takes at most 2 arguments');
 
     });
   });
@@ -1087,6 +1087,16 @@ describe('Query', function() {
       q.distinct('blah');
 
       assert.equal(q.op, 'distinct');
+    });
+
+    it('using options parameter for distinct', function() {
+      const q = new Query({});
+      const options = { collation: { locale: 'en', strength: 2 } };
+
+      q.distinct('blah', {}, options);
+
+      assert.equal(q.op, 'distinct');
+      assert.deepEqual(q.options.collation, options.collation);
     });
   });
 
@@ -1952,7 +1962,7 @@ describe('Query', function() {
       });
 
       schema.pre('deleteOne', { document: true, query: false }, async function() {
-        await this.constructor.updateOne({ isDeleted: true });
+        await this.updateOne({ isDeleted: true });
         this.$isDeleted(true);
       });
 
@@ -2328,18 +2338,20 @@ describe('Query', function() {
     });
   });
 
-  it('map (gh-7142)', async function() {
+  it('transform (gh-14236) (gh-7142)', async function() {
     const Model = db.model('Test', new Schema({ name: String }));
 
-
+    let called = 0;
     await Model.create({ name: 'test' });
     const now = new Date();
     const res = await Model.findOne().transform(res => {
       res.loadedAt = now;
+      ++called;
       return res;
     });
 
     assert.equal(res.loadedAt, now);
+    assert.strictEqual(called, 1);
   });
 
   describe('orFail (gh-6841)', function() {
@@ -3447,6 +3459,47 @@ describe('Query', function() {
     assert.deepEqual(q._fields, { email: 1 });
   });
 
+  it('sanitizeProjection option with plus paths (gh-14333) (gh-10243)', async function() {
+    const MySchema = Schema({
+      name: String,
+      email: String,
+      password: { type: String, select: false }
+    });
+    const Test = db.model('Test', MySchema);
+
+    await Test.create({ name: 'test', password: 'secret' });
+
+    let q = Test.findOne().select('+password');
+    let doc = await q;
+    assert.deepEqual(q._fields, {});
+    assert.strictEqual(doc.password, 'secret');
+
+    q = Test.findOne().setOptions({ sanitizeProjection: true }).select('+password');
+    doc = await q;
+    assert.deepEqual(q._fields, { password: 0 });
+    assert.strictEqual(doc.password, undefined);
+
+    q = Test.find().select('+password').setOptions({ sanitizeProjection: true });
+    doc = await q;
+    assert.deepEqual(q._fields, { password: 0 });
+    assert.strictEqual(doc.password, undefined);
+
+    q = Test.find().select('name +password').setOptions({ sanitizeProjection: true });
+    doc = await q;
+    assert.deepEqual(q._fields, { name: 1 });
+    assert.strictEqual(doc.password, undefined);
+
+    q = Test.find().select('+name').setOptions({ sanitizeProjection: true });
+    doc = await q;
+    assert.deepEqual(q._fields, { password: 0 });
+    assert.strictEqual(doc.password, undefined);
+
+    q = Test.find().select('password').setOptions({ sanitizeProjection: true });
+    doc = await q;
+    assert.deepEqual(q._fields, { password: 0 });
+    assert.strictEqual(doc.password, undefined);
+  });
+
   it('sanitizeFilter option (gh-3944)', function() {
     const MySchema = Schema({ username: String, pwd: String });
     const Test = db.model('Test', MySchema);
@@ -3467,6 +3520,21 @@ describe('Query', function() {
     assert.ifError(q.error());
     assert.deepEqual(q._conditions, { username: 'val', pwd: { $gt: null } });
   });
+
+  it('sanitizeFilter disables implicit $in (gh-14657)', function() {
+    const schema = new mongoose.Schema({
+      name: {
+        type: String
+      }
+    });
+    const Test = db.model('Test', schema);
+
+    const q = Test.find({ name: ['foobar'] }).setOptions({ sanitizeFilter: true });
+    q._castConditions();
+    assert.ok(q.error());
+    assert.equal(q.error().name, 'CastError');
+  });
+
   it('should not error when $not is used with $size (gh-10716)', async function() {
     const barSchema = Schema({
       bar: String
@@ -3714,6 +3782,28 @@ describe('Query', function() {
         { translateAliases: true }
       );
     }, /Provided object has both field "n" and its alias "name"/);
+  });
+
+  it('translateAliases applies before casting (gh-14521) (gh-7511)', async function() {
+    const testSchema = new Schema({
+      name: {
+        type: String,
+        alias: 'n'
+      },
+      age: {
+        type: Number
+      }
+    });
+    const Test = db.model('Test', testSchema);
+
+    const doc = await Test.findOneAndUpdate(
+      { n: 14521 },
+      { age: 7511 },
+      { translateAliases: true, upsert: true, returnDocument: 'after' }
+    );
+
+    assert.strictEqual(doc.name, '14521');
+    assert.strictEqual(doc.age, 7511);
   });
 
   it('schema level translateAliases option (gh-7511)', async function() {
@@ -4030,6 +4120,25 @@ describe('Query', function() {
     });
   });
 
+  it('shallow clones $and, $or if merging with empty filter (gh-14567) (gh-12944)', function() {
+    const TestModel = db.model(
+      'Test',
+      Schema({ name: String, age: Number, active: Boolean })
+    );
+
+    let originalQuery = { $and: [{ active: true }] };
+    let q = TestModel.countDocuments(originalQuery)
+      .and([{ age: { $gte: 18 } }]);
+    assert.deepStrictEqual(originalQuery, { $and: [{ active: true }] });
+    assert.deepStrictEqual(q.getFilter(), { $and: [{ active: true }, { age: { $gte: 18 } }] });
+
+    originalQuery = { $or: [{ active: true }] };
+    q = TestModel.countDocuments(originalQuery)
+      .or([{ age: { $gte: 18 } }]);
+    assert.deepStrictEqual(originalQuery, { $or: [{ active: true }] });
+    assert.deepStrictEqual(q.getFilter(), { $or: [{ active: true }, { age: { $gte: 18 } }] });
+  });
+
   it('should avoid sending empty session to MongoDB server (gh-13052)', async function() {
     const m = new mongoose.Mongoose();
 
@@ -4080,6 +4189,7 @@ describe('Query', function() {
       await Error.find().sort('-');
     }, { message: 'Invalid field "" passed to sort()' });
   });
+
   it('allows executing a find() with a subdocument with defaults disabled (gh-13512)', async function() {
     const schema = mongoose.Schema({
       title: String,
@@ -4153,5 +4263,153 @@ describe('Query', function() {
     doc = await Test.findById(_id).select(['-__t', '-age']);
     assert.strictEqual(doc.name, 'test1');
     assert.strictEqual(doc.__t, undefined);
+  });
+
+  it('does not apply sibling path defaults if using nested projection (gh-14115)', async function() {
+    const version = await start.mongodVersion();
+    if (version[0] < 5) {
+      return this.skip();
+    }
+
+    const userSchema = new mongoose.Schema({
+      name: String,
+      account: {
+        amount: Number,
+        owner: { type: String, default: () => 'OWNER' },
+        taxIds: [Number]
+      }
+    });
+    const User = db.model('User', userSchema);
+
+    const { _id } = await User.create({
+      name: 'test',
+      account: {
+        amount: 25,
+        owner: 'test',
+        taxIds: [42]
+      }
+    });
+
+    const doc = await User
+      .findOne({ _id }, { name: 1, account: { amount: 1 } })
+      .orFail();
+    assert.strictEqual(doc.name, 'test');
+    assert.strictEqual(doc.account.amount, 25);
+    assert.strictEqual(doc.account.owner, undefined);
+    assert.strictEqual(doc.account.taxIds, undefined);
+  });
+
+  it('allows overriding sort (gh-14365)', function() {
+    const testSchema = new mongoose.Schema({
+      name: String
+    });
+
+    const Test = db.model('Test', testSchema);
+
+    const q = Test.find().select('name').sort({ name: -1, _id: -1 });
+    assert.deepStrictEqual(q.getOptions().sort, { name: -1, _id: -1 });
+
+    q.sort({ name: 1 }, { override: true });
+    assert.deepStrictEqual(q.getOptions().sort, { name: 1 });
+
+    q.sort(null, { override: true });
+    assert.deepStrictEqual(q.getOptions().sort, {});
+
+    q.sort({ _id: 1 }, { override: true });
+    assert.deepStrictEqual(q.getOptions().sort, { _id: 1 });
+
+    q.sort({}, { override: true });
+    assert.deepStrictEqual(q.getOptions().sort, {});
+  });
+
+  it('avoids mutating user-provided query selectors (gh-14567)', async function() {
+    const TestModel = db.model(
+      'Test',
+      Schema({ name: String, age: Number, active: Boolean })
+    );
+
+    await TestModel.create({ name: 'John', age: 21 });
+    await TestModel.create({ name: 'Bob', age: 35 });
+
+    const adultQuery = { age: { $gte: 18 } };
+
+    const docs = await TestModel.find(adultQuery).where('age').lte(25);
+    assert.equal(docs.length, 1);
+    assert.equal(docs[0].name, 'John');
+
+    assert.deepStrictEqual(adultQuery, { age: { $gte: 18 } });
+  });
+
+  it('avoids mutating $or, $and elements when casting (gh-14610)', async function() {
+    const personSchema = new mongoose.Schema({
+      name: String,
+      age: Number
+    });
+    const Person = db.model('Person', personSchema);
+
+    const filter = [{ name: 'Me', age: '20' }, { name: 'You', age: '50' }];
+    await Person.find({ $or: filter });
+    assert.deepStrictEqual(filter, [{ name: 'Me', age: '20' }, { name: 'You', age: '50' }]);
+
+    await Person.find({ $and: filter });
+    assert.deepStrictEqual(filter, [{ name: 'Me', age: '20' }, { name: 'You', age: '50' }]);
+  });
+
+  describe('schemaLevelProjections (gh-11474)', function() {
+    it('disables schema-level select: false', async function() {
+      const userSchema = new Schema({
+        email: { type: String, required: true },
+        passwordHash: { type: String, select: false, required: true }
+      });
+      const UserModel = db.model('User', userSchema);
+
+      const { _id } = await UserModel.create({ email: 'test', passwordHash: 'gh-11474' });
+
+      const doc = await UserModel.findById(_id).orFail().schemaLevelProjections(false);
+      assert.strictEqual(doc.email, 'test');
+      assert.strictEqual(doc.passwordHash, 'gh-11474');
+    });
+
+    it('disables schema-level select: true', async function() {
+      const userSchema = new Schema({
+        email: { type: String, required: true, select: true },
+        otherProp: String
+      });
+      const UserModel = db.model('User', userSchema);
+
+      const { _id } = await UserModel.create({ email: 'test', otherProp: 'gh-11474 select true' });
+
+      const doc = await UserModel.findById(_id).select('otherProp').orFail().schemaLevelProjections(false);
+      assert.strictEqual(doc.email, undefined);
+      assert.strictEqual(doc.otherProp, 'gh-11474 select true');
+    });
+
+    it('works via setOptions()', async function() {
+      const userSchema = new Schema({
+        email: { type: String, required: true },
+        passwordHash: { type: String, select: false, required: true }
+      });
+      const UserModel = db.model('User', userSchema);
+
+      const { _id } = await UserModel.create({ email: 'test', passwordHash: 'gh-11474' });
+
+      const doc = await UserModel.findById(_id).orFail().setOptions({ schemaLevelProjections: false });
+      assert.strictEqual(doc.email, 'test');
+      assert.strictEqual(doc.passwordHash, 'gh-11474');
+    });
+
+    it('disabled via truthy value', async function() {
+      const userSchema = new Schema({
+        email: { type: String, required: true },
+        passwordHash: { type: String, select: false, required: true }
+      });
+      const UserModel = db.model('User', userSchema);
+
+      const { _id } = await UserModel.create({ email: 'test', passwordHash: 'gh-11474' });
+
+      const doc = await UserModel.findById(_id).orFail().schemaLevelProjections(true);
+      assert.strictEqual(doc.email, 'test');
+      assert.strictEqual(doc.passwordHash, undefined);
+    });
   });
 });

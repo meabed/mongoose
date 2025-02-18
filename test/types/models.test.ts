@@ -2,6 +2,7 @@ import mongoose, {
   Schema,
   Document,
   Model,
+  createConnection,
   connection,
   model,
   Types,
@@ -13,11 +14,13 @@ import mongoose, {
   Query,
   UpdateWriteOpResult,
   AggregateOptions,
-  StringSchemaDefinition
+  WithLevel1NestedPaths,
+  InferSchemaType,
+  DeleteResult
 } from 'mongoose';
 import { expectAssignable, expectError, expectType } from 'tsd';
 import { AutoTypedSchemaType, autoTypedSchema } from './schema.test';
-import { UpdateOneModel, ChangeStreamInsertDocument, ObjectId } from 'mongodb';
+import { ModifyResult, UpdateOneModel, ChangeStreamInsertDocument, ObjectId } from 'mongodb';
 
 function rawDocSyntax(): void {
   interface ITest {
@@ -213,7 +216,7 @@ function find() {
   Project.find({});
   Project.find({ name: 'Hello' });
 
-  // just callback
+  // just callback; this is no longer supported on .find()
   Project.find((error: CallbackError, result: IProject[]) => console.log(error, result));
 
   // filter + projection
@@ -512,7 +515,7 @@ function gh12100() {
 function modelRemoveOptions() {
   const cmodel = model('Test', new Schema());
 
-  cmodel.deleteOne({}, {});
+  const res: DeleteResult = await cmodel.deleteOne({}, {});
 }
 
 async function gh12286() {
@@ -621,9 +624,9 @@ async function gh13151() {
 
   const TestModel = model<ITest>('Test', TestSchema);
   const test = await TestModel.findOne().lean();
-  expectType<ITest & { _id: Types.ObjectId } | null>(test);
+  expectType<ITest & { _id: Types.ObjectId } & { __v: number } | null>(test);
   if (!test) return;
-  expectType<ITest & { _id: Types.ObjectId }>(test);
+  expectType<ITest & { _id: Types.ObjectId } & { __v: number }>(test);
 }
 
 function gh13206() {
@@ -659,7 +662,7 @@ async function gh13705() {
   const schema = new Schema({ name: String });
   const TestModel = model('Test', schema);
 
-  type ExpectedLeanDoc = (mongoose.FlattenMaps<{ name?: string | null }> & { _id: mongoose.Types.ObjectId });
+  type ExpectedLeanDoc = (mongoose.FlattenMaps<{ name?: string | null }> & { _id: mongoose.Types.ObjectId } & { __v: number });
 
   const findByIdRes = await TestModel.findById('0'.repeat(24), undefined, { lean: true });
   expectType<ExpectedLeanDoc | null>(findByIdRes);
@@ -684,6 +687,9 @@ async function gh13705() {
 
   const findOneAndUpdateRes = await TestModel.findOneAndUpdate({}, {}, { lean: true });
   expectType<ExpectedLeanDoc | null>(findOneAndUpdateRes);
+
+  const findOneAndUpdateResWithMetadata = await TestModel.findOneAndUpdate({}, {}, { lean: true, includeResultMetadata: true });
+  expectAssignable<ModifyResult<ExpectedLeanDoc>>(findOneAndUpdateResWithMetadata);
 }
 
 async function gh13746() {
@@ -821,7 +827,7 @@ async function gh14072() {
   );
 
   const M = mongoose.model<Test>('Test', schema);
-  const bulkWriteArray = [
+  await M.bulkWrite([
     {
       insertOne: {
         document: { num: 3 }
@@ -841,9 +847,7 @@ async function gh14072() {
         timestamps: false
       }
     }
-  ];
-
-  await M.bulkWrite(bulkWriteArray);
+  ]);
 }
 
 async function gh14003() {
@@ -876,4 +880,121 @@ async function gh13999() {
       return elems;
     }
   }
+}
+
+function gh4727() {
+  const userSchema = new mongoose.Schema({
+    name: String
+  });
+  const companySchema = new mongoose.Schema({
+    name: String,
+    users: [{ ref: 'User', type: mongoose.Schema.Types.ObjectId }]
+  });
+
+  mongoose.model('UserTestHydrate', userSchema);
+  const Company = mongoose.model('CompanyTestHyrdrate', companySchema);
+
+  const users = [{ _id: new mongoose.Types.ObjectId(), name: 'Val' }];
+  const company = { _id: new mongoose.Types.ObjectId(), name: 'Booster', users: [users[0]] };
+
+  return Company.hydrate(company, {}, { hydratedPopulatedDocs: true });
+}
+
+async function gh14440() {
+  const testSchema = new Schema({
+    dateProperty: { type: Date }
+  });
+
+  const TestModel = model('Test', testSchema);
+
+  const doc = new TestModel();
+  await TestModel.bulkWrite([
+    {
+      updateOne: {
+        filter: { _id: doc._id },
+        update: { dateProperty: (new Date('2023-06-01')).toISOString() }
+      }
+    }
+  ]);
+}
+
+async function gh12064() {
+  const FooSchema = new Schema({
+    one: { type: String }
+  });
+
+  const MyRecordSchema = new Schema({
+    _id: { type: String },
+    foo: { type: FooSchema },
+    arr: [Number]
+  });
+
+  const MyRecord = model('MyRecord', MyRecordSchema);
+
+  expectType<(string | null)[]>(
+    await MyRecord.distinct('foo.one').exec()
+  );
+  expectType<(string | null)[]>(
+    await MyRecord.find().distinct('foo.one').exec()
+  );
+  expectType<unknown[]>(await MyRecord.distinct('foo.two').exec());
+  expectType<unknown[]>(await MyRecord.distinct('arr.0').exec());
+}
+
+function testWithLevel1NestedPaths() {
+  type Test1 = WithLevel1NestedPaths<{
+    topLevel: number,
+    nested1Level: {
+      l2: string
+    },
+    nested2Level: {
+      l2: { l3: boolean }
+    }
+  }>;
+
+  expectType<{
+    topLevel: number,
+    nested1Level: { l2: string },
+    'nested1Level.l2': string,
+    nested2Level: { l2: { l3: boolean } },
+    'nested2Level.l2': { l3: boolean }
+  }>({} as Test1);
+
+  const FooSchema = new Schema({
+    one: { type: String }
+  });
+
+  const schema = new Schema({
+    _id: { type: String },
+    foo: { type: FooSchema }
+  });
+
+  type InferredDocType = InferSchemaType<typeof schema>;
+
+  type Test2 = WithLevel1NestedPaths<InferredDocType>;
+  expectAssignable<{
+    _id: string | null | undefined,
+    foo?: { one?: string | null | undefined } | null | undefined,
+    'foo.one': string | null | undefined
+  }>({} as Test2);
+}
+
+async function gh14802() {
+  const schema = new mongoose.Schema({
+    name: String
+  });
+  const Model = model('Test', schema);
+
+  const conn2 = mongoose.createConnection('mongodb://127.0.0.1:27017/mongoose_test');
+  Model.useConnection(conn2);
+}
+
+async function gh14843() {
+  const schema = new mongoose.Schema({
+    name: String
+  });
+  const Model = model('Test', schema);
+
+  const doc = await Model.insertOne({ name: 'taco' });
+  expectType<ReturnType<(typeof Model)['hydrate']>>(doc);
 }

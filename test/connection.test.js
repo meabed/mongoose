@@ -11,6 +11,7 @@ const Q = require('q');
 const assert = require('assert');
 const mongodb = require('mongodb');
 const MongooseError = require('../lib/error/index');
+const CastError = require('../lib/error/cast');
 
 const mongoose = start.mongoose;
 const Schema = mongoose.Schema;
@@ -94,7 +95,7 @@ describe('connections:', function() {
       }));
       await Model.init();
 
-      const res = await conn.db.listCollections().toArray();
+      const res = await conn.listCollections();
       assert.ok(!res.map(c => c.name).includes('gh8814_Conn'));
       await conn.close();
     });
@@ -185,15 +186,96 @@ describe('connections:', function() {
         size: 1024
       });
 
-      const collections = await conn.db.listCollections().toArray();
+      const collections = await conn.listCollections();
 
       const names = collections.map(function(c) { return c.name; });
       assert.ok(names.indexOf('gh5712') !== -1);
       assert.ok(collections[names.indexOf('gh5712')].options.capped);
       await conn.createCollection('gh5712_0');
-      const collectionsAfterCreation = await conn.db.listCollections().toArray();
+      const collectionsAfterCreation = await conn.listCollections();
       const newCollectionsNames = collectionsAfterCreation.map(function(c) { return c.name; });
       assert.ok(newCollectionsNames.indexOf('gh5712') !== -1);
+    });
+
+    it('listCollections()', async function() {
+      await conn.dropDatabase();
+      await conn.createCollection('test1176');
+      await conn.createCollection('test94112');
+
+      const collections = await conn.listCollections();
+      assert.deepStrictEqual(collections.map(coll => coll.name).sort(), ['test1176', 'test94112']);
+    });
+  });
+
+  describe('events', function() {
+    let conn;
+
+    before(async function() {
+      conn = mongoose.createConnection(start.uri2, { monitorCommands: true });
+      await conn.asPromise();
+      await conn.collection('test').deleteMany({});
+      return conn;
+    });
+
+    after(function() {
+      return conn.close();
+    });
+
+    it('operation-start', async function() {
+      const events = [];
+      conn.on('operation-start', ev => events.push(ev));
+
+      await conn.collection('test').findOne({ answer: 42 });
+      assert.equal(events.length, 1);
+      assert.equal(events[0].collectionName, 'test');
+      assert.equal(events[0].method, 'findOne');
+      assert.deepStrictEqual(events[0].params, [{ answer: 42 }]);
+
+      await conn.collection('test').insertOne({ _id: 12, answer: 99 });
+      assert.equal(events.length, 2);
+      assert.equal(events[1].collectionName, 'test');
+      assert.equal(events[1].method, 'insertOne');
+      assert.deepStrictEqual(events[1].params, [{ _id: 12, answer: 99 }]);
+    });
+
+    it('operation-end', async function() {
+      const events = [];
+      conn.on('operation-end', ev => {
+        events.push(ev);
+      });
+
+      await conn.collection('test').insertOne({ _id: 17, answer: 42 });
+      assert.equal(events.length, 1);
+      assert.equal(events[0].collectionName, 'test');
+      assert.equal(events[0].method, 'insertOne');
+
+      await conn.collection('test').findOne({ answer: 42 });
+      assert.equal(events.length, 2);
+      assert.equal(events[1].collectionName, 'test');
+      assert.equal(events[1].method, 'findOne');
+      assert.deepStrictEqual(events[1].result, { _id: 17, answer: 42 });
+    });
+
+    it('commandStarted, commandFailed, commandSucceeded (gh-14611)', async function() {
+      let events = [];
+      conn.on('commandStarted', event => events.push(event));
+      conn.on('commandFailed', event => events.push(event));
+      conn.on('commandSucceeded', event => events.push(event));
+
+      await conn.collection('test').insertOne({ _id: 14611, answer: 42 });
+      assert.equal(events.length, 2);
+      assert.equal(events[0].constructor.name, 'CommandStartedEvent');
+      assert.equal(events[0].commandName, 'insert');
+      assert.equal(events[1].constructor.name, 'CommandSucceededEvent');
+      assert.equal(events[1].requestId, events[0].requestId);
+
+      events = [];
+      await conn.createCollection('tests', { capped: 1024 }).catch(() => {});
+      assert.equal(events.length, 2);
+      assert.equal(events[0].constructor.name, 'CommandStartedEvent');
+      assert.equal(events[0].commandName, 'create');
+      assert.equal(events[1].constructor.name, 'CommandFailedEvent');
+      assert.equal(events[1].requestId, events[0].requestId);
     });
   });
 
@@ -907,6 +989,21 @@ describe('connections:', function() {
     assert.equal(err.name, 'MongooseServerSelectionError');
   });
 
+  it('avoids unhandled error on createConnection() if error handler registered (gh-14377)', async function() {
+    const opts = {
+      serverSelectionTimeoutMS: 100
+    };
+    const uri = 'mongodb://baddomain:27017/test';
+
+    const conn = mongoose.createConnection(uri, opts);
+    await new Promise(resolve => {
+      conn.on('error', err => {
+        assert.equal(err.name, 'MongoServerSelectionError');
+        resolve();
+      });
+    });
+  });
+
   it('`watch()` on a whole collection (gh-8425)', async function() {
     this.timeout(10000);
     if (!process.env.REPLICA_SET) {
@@ -936,6 +1033,8 @@ describe('connections:', function() {
     await nextChange;
     assert.equal(changes.length, 1);
     assert.equal(changes[0].operationType, 'insert');
+
+    await changeStream.close();
     await conn.close();
   });
 
@@ -1538,11 +1637,46 @@ describe('connections:', function() {
     assert.ok(!res.map(c => c.name).includes('gh12940_Conn'));
   });
 
+  it('does not wait for buffering if autoCreate: false (gh-15241)', async function() {
+    const m = new mongoose.Mongoose();
+    m.set('bufferTimeoutMS', 100);
+
+    const schema = new Schema({ name: String }, {
+      autoCreate: false
+    });
+    const Model = m.model('gh15241_Conn', schema);
+
+    // Without gh-15241 changes, this would buffer and fail even though `autoCreate: false`
+    await Model.init();
+  });
+
   it('should not create default connection with createInitialConnection = false (gh-12965)', function() {
     const m = new mongoose.Mongoose({
       createInitialConnection: false
     });
     assert.deepEqual(m.connections.length, 0);
+  });
+  it('should demonstrate the withSession() function (gh-14330)', async function() {
+    if (!process.env.REPLICA_SET && !process.env.START_REPLICA_SET) {
+      this.skip();
+    }
+    const m = new mongoose.Mongoose();
+    m.connect(start.uri);
+    let session = null;
+    await m.connection.withSession(s => {
+      session = s;
+    });
+    assert.ok(session);
+  });
+  it('listDatabases() should return a list of database objects with a name property (gh-9048)', async function() {
+    const connection = await mongoose.createConnection(start.uri).asPromise();
+    // If this test is running in isolation, then the `start.uri` db might not
+    // exist yet, so create this collection (and the associated db) just in case
+    await connection.createCollection('tests').catch(() => {});
+
+    const { databases } = await connection.listDatabases();
+    assert.ok(connection.name);
+    assert.ok(databases.map(database => database.name).includes(connection.name));
   });
   describe('createCollections()', function() {
     it('should create collections for all models on the connection with the createCollections() function (gh-13300)', async function() {
@@ -1573,5 +1707,156 @@ describe('connections:', function() {
       const conn = await m.connect(start.uri, opts);
       assert.ok(conn);
     });
+  });
+
+  it('connection bulkWrite() ordered (gh-15028)', async function() {
+    const db = start();
+
+    const version = await start.mongodVersion();
+    if (version[0] < 8) {
+      this.skip();
+      return;
+    }
+    const Test = db.model('Test', new Schema({ name: { type: String, required: true } }));
+
+    await Test.deleteMany({});
+    await db.bulkWrite([{ model: 'Test', name: 'insertOne', document: { name: 'test1' } }]);
+    assert.ok(await Test.exists({ name: 'test1' }));
+
+    await db.bulkWrite([{ model: Test, name: 'insertOne', document: { name: 'test2' } }]);
+    assert.ok(await Test.exists({ name: 'test2' }));
+
+    await assert.rejects(
+      () => db.bulkWrite([{ name: 'insertOne', document: { name: 'foo' } }]),
+      /Must specify model in Connection.prototype.bulkWrite\(\) operations/
+    );
+
+    await assert.rejects(
+      () => db.bulkWrite([{ model: Test, document: { name: 'foo' } }]),
+      /Must specify operation name in Connection.prototype.bulkWrite\(\)/
+    );
+    await assert.rejects(
+      () => db.bulkWrite([{ model: Test, name: 'upsertAll', document: { name: 'foo' } }]),
+      /Unrecognized bulkWrite\(\) operation name upsertAll/
+    );
+  });
+
+  it('connection bulkWrite() unordered (gh-15028)', async function() {
+    const db = start();
+
+    const version = await start.mongodVersion();
+    if (version[0] < 8) {
+      this.skip();
+      return;
+    }
+
+    const Test = db.model('Test', new Schema({ name: { type: String, required: true }, num: Number }));
+
+    await Test.deleteMany({});
+    await db.bulkWrite([{ model: 'Test', name: 'insertOne', document: { name: 'test1' } }], { ordered: false });
+    assert.ok(await Test.exists({ name: 'test1' }));
+
+    await db.bulkWrite([{ model: Test, name: 'insertOne', document: { name: 'test2' } }], { ordered: false });
+    assert.ok(await Test.exists({ name: 'test2' }));
+
+    await assert.rejects(
+      () => {
+        return db.bulkWrite([
+          { name: 'insertOne', document: { name: 'foo' } },
+          { model: Test, name: 'insertOne', document: { name: 'test3' } }
+        ], { ordered: false, throwOnValidationError: true });
+      },
+      /Must specify model in Connection.prototype.bulkWrite\(\) operations/
+    );
+    assert.ok(await Test.exists({ name: 'test3' }));
+
+    await assert.rejects(
+      () => db.bulkWrite([
+        { model: Test, document: { name: 'foo' } },
+        { model: Test, name: 'insertOne', document: { name: 'test4' } }
+      ], { ordered: false, throwOnValidationError: true }),
+      /Must specify operation name in Connection.prototype.bulkWrite\(\)/
+    );
+    assert.ok(await Test.exists({ name: 'test4' }));
+
+    await assert.rejects(
+      () => db.bulkWrite([
+        { model: Test, name: 'upsertAll', document: { name: 'foo' } },
+        { model: Test, name: 'insertOne', document: { name: 'test5' } }
+      ], { ordered: false, throwOnValidationError: true }),
+      /Unrecognized bulkWrite\(\) operation name upsertAll/
+    );
+    assert.ok(await Test.exists({ name: 'test5' }));
+
+    const res = await db.bulkWrite([
+      { model: 'Test', name: 'updateOne', filter: { name: 'test5' }, update: { $set: { num: 42 } } },
+      { model: 'Test', name: 'updateOne', filter: { name: 'test4' }, update: { $set: { num: 'not a number' } } }
+    ], { ordered: false });
+    assert.equal(res.matchedCount, 1);
+    assert.equal(res.modifiedCount, 1);
+    assert.equal(res.mongoose.results.length, 2);
+    assert.equal(res.mongoose.results[0], null);
+    assert.ok(res.mongoose.results[1] instanceof CastError);
+    assert.ok(res.mongoose.results[1].message.includes('not a number'));
+  });
+
+  it('buffers connection helpers', async function() {
+    const m = new mongoose.Mongoose();
+
+    const promise = m.connection.listCollections();
+
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await m.connect(start.uri, { bufferTimeoutMS: 1000 });
+    await promise;
+
+    await m.connection.listCollections();
+
+    await m.disconnect();
+  });
+
+  it('connection helpers buffering times out', async function() {
+    const m = new mongoose.Mongoose();
+    m.set('bufferTimeoutMS', 100);
+
+    await assert.rejects(m.connection.listCollections(), /Connection operation buffering timed out after 100ms/);
+  });
+
+  it('supports db-level aggregate on connection (gh-15118)', async function() {
+    const db = start();
+
+    const version = await start.mongodVersion();
+    if (version[0] < 6) {
+      this.skip();
+      return;
+    }
+
+    const result = await db.aggregate([
+      { $documents: [{ x: 10 }, { x: 2 }, { x: 5 }] },
+      { $bucketAuto: { groupBy: '$x', buckets: 4 } }
+    ]);
+    assert.deepStrictEqual(result, [
+      { _id: { min: 2, max: 5 }, count: 1 },
+      { _id: { min: 5, max: 10 }, count: 1 },
+      { _id: { min: 10, max: 10 }, count: 1 }
+    ]);
+
+    const cursor = await db.aggregate([
+      { $documents: [{ x: 10 }, { x: 2 }, { x: 5 }] },
+      { $bucketAuto: { groupBy: '$x', buckets: 4 } }
+    ]).cursor();
+    const cursorResult = [];
+    while (true) {
+      const doc = await cursor.next();
+      if (doc == null) {
+        break;
+      } else {
+        cursorResult.push(doc);
+      }
+    }
+    assert.deepStrictEqual(cursorResult, [
+      { _id: { min: 2, max: 5 }, count: 1 },
+      { _id: { min: 5, max: 10 }, count: 1 },
+      { _id: { min: 10, max: 10 }, count: 1 }
+    ]);
   });
 });
